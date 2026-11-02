@@ -5,22 +5,29 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch YouTube continuations
+      - name: Fetch and call fresh YouTube continuation
         run: |
-          cat > scrape.py <<'PY'
-          import json, urllib.request, urllib.error
+          cat > scrape_fresh.py <<'PY'
+          import json, re, urllib.request, urllib.error, sys
+          playlist = "PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7"
           web_key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
           music_key = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
-          web_token = "4qmFsgJbEiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTGNMNEFzQpoCJFZMUEx5elRBOGNldFBkSHRsR3cxWDhLdDdFYTRiZDI3QXBSNw=="
-          music_token = "4qmFsgI0EiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTTBHOEFFQQ=="
-          variants = [
-            ("web-web", "https://www.youtube.com", web_key, "WEB", "2.20261030.02.00", web_token),
-            ("music-music", "https://music.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", music_token),
-            ("web-music", "https://www.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", music_token),
-            ("music-web", "https://music.youtube.com", web_key, "WEB", "2.20261030.02.00", web_token),
-            ("music-web-token", "https://music.youtube.com", web_key, "WEB", "2.20261030.02.00", web_token),
-            ("web-music-token", "https://www.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", music_token),
-          ]
+          UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          def get(url):
+              req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-GB,en;q=0.9"})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return r.read().decode("utf-8", "replace")
+
+          def post(base, key, client, version, token, visitor=None):
+              client_obj = {"hl":"en-GB","gl":"SG","clientName":client,"clientVersion":version,"userAgent":UA}
+              if visitor: client_obj["visitorData"] = visitor
+              body={"context":{"client":client_obj},"continuation":token}
+              req=urllib.request.Request(base+"/youtubei/v1/browse?key="+key,data=json.dumps(body).encode(),headers={"Content-Type":"application/json","User-Agent":UA,"Accept-Language":"en-GB,en;q=0.9"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r: return r.status, r.read().decode()
+              except urllib.error.HTTPError as e: return e.code, e.read().decode()
+
           def collect(x, out):
               if isinstance(x, dict):
                   if "lockupViewModel" in x:
@@ -37,23 +44,41 @@ jobs:
                   for v in x.values(): collect(v,out)
               elif isinstance(x, list):
                   for v in x: collect(v,out)
-          for name,base,key,client,version,token in variants:
-              body={"context":{"client":{"hl":"en-GB","gl":"SG","clientName":client,"clientVersion":version,"userAgent":"Mozilla/5.0"}},"continuation":token}
-              req=urllib.request.Request(base+"/youtubei/v1/browse?key="+key,data=json.dumps(body).encode(),headers={"Content-Type":"application/json","User-Agent":"Mozilla/5.0"})
-              print("\n====", name, "====")
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as r:
-                      raw=r.read().decode(); status=r.status
-              except urllib.error.HTTPError as e:
-                  raw=e.read().decode(); status=e.code
-              except Exception as e:
-                  print("EXCEPTION",repr(e)); continue
+
+          print("Fetching web HTML")
+          web_html = get("https://www.youtube.com/playlist?list=" + playlist)
+          web_tokens = re.findall(r'continuationCommand":\{"token":"([^"]+)"', web_html)
+          web_visitors = re.findall(r'"visitorData":"([^"]+)"', web_html)
+          print("web tokens", web_tokens)
+          print("web visitors", web_visitors[:3])
+
+          print("Fetching music HTML")
+          music_html = get("https://music.youtube.com/playlist?list=" + playlist)
+          music_tokens = re.findall(r'nextContinuationData":\{"continuation":"([^"]+)"', music_html)
+          music_visitors = re.findall(r'"visitorData":"([^"]+)"', music_html)
+          print("music tokens", music_tokens)
+          print("music visitors", music_visitors[:3])
+
+          attempts=[]
+          for t in web_tokens:
+              attempts.append(("web fresh token no visitor", "https://www.youtube.com", web_key, "WEB", "2.20261030.02.00", t, None))
+              attempts.append(("web fresh token with visitor", "https://www.youtube.com", web_key, "WEB", "2.20261030.02.00", t, web_visitors[0] if web_visitors else None))
+          for t in music_tokens:
+              attempts.append(("music fresh token no visitor", "https://music.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", t, None))
+              attempts.append(("music fresh token with visitor", "https://music.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", t, music_visitors[0] if music_visitors else None))
+
+          for name,base,key,client,version,token,visitor in attempts:
+              print("\n====",name,"====")
+              print("token",token,"visitor",visitor)
+              status,raw=post(base,key,client,version,token,visitor)
               print("STATUS",status,"LEN",len(raw))
-              print(raw[:1500])
+              print(raw[:1200])
               try: data=json.loads(raw)
               except Exception: continue
               out=[]; collect(data,out)
               print("ITEMS",json.dumps(out,ensure_ascii=False))
               print("KEYS",list(data.keys()))
+              if out:
+                  open("yt-continuation.json","w").write(json.dumps(data,ensure_ascii=False,indent=2))
           PY
-          python3 scrape.py
+          python3 scrape_fresh.py
