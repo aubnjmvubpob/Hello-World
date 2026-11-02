@@ -5,59 +5,55 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch YouTube continuation
+      - name: Fetch YouTube continuations
         run: |
-          python3 - <<'PY'
-          import json, urllib.request, sys
-          key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-          continuation = "4qmFsgJbEiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTGNMNEFzQpoCJFZMUEx5elRBOGNldFBkSHRsR3cxWDhLdDdFYTRiZDI3QXBSNw=="
-          body = {
-            "context": {"client": {"hl": "en-GB", "gl": "SG", "clientName": "WEB", "clientVersion": "2.20261030.02.00"}},
-            "continuation": continuation
-          }
-          req = urllib.request.Request(
-              "https://www.youtube.com/youtubei/v1/browse?key=" + key,
-              data=json.dumps(body).encode(),
-              headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  data = json.load(r)
-          except Exception as e:
-              print("ERROR", repr(e))
-              if hasattr(e, "read"):
-                  print(e.read().decode()[:2000])
-              sys.exit(1)
-          open("yt-response.json", "w").write(json.dumps(data, ensure_ascii=False))
-          out=[]
-          def walk(x):
+          cat > scrape.py <<'PY'
+          import json, urllib.request, urllib.error
+          web_key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+          music_key = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
+          web_token = "4qmFsgJbEiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTGNMNEFzQpoCJFZMUEx5elRBOGNldFBkSHRsR3cxWDhLdDdFYTRiZDI3QXBSNw=="
+          music_token = "4qmFsgI0EiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTTBHOEFFQQ=="
+          variants = [
+            ("web-web", "https://www.youtube.com", web_key, "WEB", "2.20261030.02.00", web_token),
+            ("music-music", "https://music.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", music_token),
+            ("web-music", "https://www.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", music_token),
+            ("music-web", "https://music.youtube.com", web_key, "WEB", "2.20261030.02.00", web_token),
+            ("music-web-token", "https://music.youtube.com", web_key, "WEB", "2.20261030.02.00", web_token),
+            ("web-music-token", "https://www.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", music_token),
+          ]
+          def collect(x, out):
               if isinstance(x, dict):
                   if "lockupViewModel" in x:
-                      l = x["lockupViewModel"]
-                      md = l.get("metadata", {}).get("lockupMetadataViewModel", {})
-                      title = md.get("title", {}).get("content")
-                      content_id = l.get("contentId") or l.get("id") or l.get("videoId")
-                      out.append({"kind":"lockup", "title": title, "id": content_id, "keys": list(l.keys())})
+                      l=x["lockupViewModel"]; md=l.get("metadata",{}).get("lockupMetadataViewModel",{})
+                      out.append(("lockup", md.get("title",{}).get("content"), l.get("contentId") or l.get("videoId")))
                   if "playlistVideoRenderer" in x:
-                      p = x["playlistVideoRenderer"]
-                      title = p.get("title", {}).get("runs", [{}])[0].get("text")
-                      out.append({"kind":"playlistVideo", "title": title, "id": p.get("videoId"), "keys": list(p.keys())})
+                      p=x["playlistVideoRenderer"]; out.append(("playlistVideo", p.get("title",{}).get("runs",[{}])[0].get("text"), p.get("videoId")))
                   if "musicResponsiveListItemRenderer" in x:
-                      p=x["musicResponsiveListItemRenderer"]
-                      title=None
+                      p=x["musicResponsiveListItemRenderer"]; title=None
                       for col in p.get("flexColumns",[]):
                           runs=col.get("musicResponsiveListItemFlexColumnRenderer",{}).get("text",{}).get("runs",[])
-                          if runs:
-                              title=runs[0].get("text"); break
-                      out.append({"kind":"music", "title": title, "id": p.get("playlistItemData",{}).get("videoId")})
-                  for v in x.values(): walk(v)
+                          if runs: title=runs[0].get("text"); break
+                      out.append(("music", title, p.get("playlistItemData",{}).get("videoId")))
+                  for v in x.values(): collect(v,out)
               elif isinstance(x, list):
-                  for v in x: walk(v)
-          walk(data)
-          print("ITEMS", json.dumps(out, ensure_ascii=False, indent=2))
-          print("TOP KEYS", list(data.keys()))
-      - name: Upload response
-        uses: actions/upload-artifact@v4
-        with:
-          name: yt-response
-          path: yt-response.json
+                  for v in x: collect(v,out)
+          for name,base,key,client,version,token in variants:
+              body={"context":{"client":{"hl":"en-GB","gl":"SG","clientName":client,"clientVersion":version,"userAgent":"Mozilla/5.0"}},"continuation":token}
+              req=urllib.request.Request(base+"/youtubei/v1/browse?key="+key,data=json.dumps(body).encode(),headers={"Content-Type":"application/json","User-Agent":"Mozilla/5.0"})
+              print("\n====", name, "====")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      raw=r.read().decode(); status=r.status
+              except urllib.error.HTTPError as e:
+                  raw=e.read().decode(); status=e.code
+              except Exception as e:
+                  print("EXCEPTION",repr(e)); continue
+              print("STATUS",status,"LEN",len(raw))
+              print(raw[:1500])
+              try: data=json.loads(raw)
+              except Exception: continue
+              out=[]; collect(data,out)
+              print("ITEMS",json.dumps(out,ensure_ascii=False))
+              print("KEYS",list(data.keys()))
+          PY
+          python3 scrape.py
