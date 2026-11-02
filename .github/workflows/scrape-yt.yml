@@ -14,61 +14,49 @@ jobs:
           npm init -y
           npm install playwright
           npx playwright install chromium --with-deps
-      - name: Load playlist in headless Chrome
+      - name: Debug and load playlist
         run: |
           cat > scrape.mjs <<'EOF'
           import { chromium } from 'playwright';
-          const playlist = 'PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7';
-          const browser = await chromium.launch({ headless: true });
-          const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' });
-          const browseResponses = [];
-          page.on('response', async (response) => {
-            const url = response.url();
-            if (url.includes('/youtubei/v1/browse')) {
-              try { browseResponses.push(await response.json()); } catch {}
-            }
-          });
-          await page.goto('https://www.youtube.com/playlist?list=' + playlist + '&hl=en&gl=US', { waitUntil: 'domcontentloaded', timeout: 60000 });
+          const playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7';
+          const browser=await chromium.launch({headless:true});
+          const page=await browser.newPage({viewport:{width:1400,height:1000},userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'});
+          page.on('console', m => console.log('BROWSER', m.type(), m.text()));
+          page.on('pageerror', e => console.log('PAGEERROR', e.message));
+          await page.goto('https://www.youtube.com/playlist?list='+playlist+'&hl=en&gl=US&bpctr=9999999999&has_verified=1',{waitUntil:'networkidle',timeout:90000});
           await page.waitForTimeout(5000);
-          let lastCount = 0;
-          for (let i = 0; i < 30; i++) {
-            await page.mouse.wheel(0, 8000);
-            await page.waitForTimeout(2000);
-            const count = await page.locator('ytd-playlist-video-renderer, ytd-playlist-video-list-renderer, #video-title, a#video-title').count();
-            console.log('scroll', i, 'elements', count);
-            if (count === lastCount && i > 5) break;
-            lastCount = count;
+          for (const label of ['Accept all','I agree','Accept','Reject all','Dismiss']) {
+            const btn=page.locator(`button:has-text("${label}"), tp-yt-paper-button:has-text("${label}")`).first();
+            if (await btn.count()) { try { await btn.click({timeout:3000}); await page.waitForTimeout(2000); } catch {} }
           }
-          const domItems = await page.evaluate(() => {
-            const anchors = [...document.querySelectorAll('a#video-title, ytd-playlist-video-renderer a[href*="watch"], ytd-playlist-video-list-renderer a[href*="watch"]')];
-            return anchors.map(a => ({ title: (a.getAttribute('title') || a.innerText || a.textContent || '').trim(), href: a.href })).filter(x => x.title && x.href.includes('/watch'));
+          console.log('URL',page.url());
+          console.log('TITLE',await page.title());
+          console.log('BODY',await page.locator('body').innerText({timeout:5000}).catch(e=>String(e)));
+          await page.screenshot({path:'shot-initial.png',fullPage:true});
+          let last=-1;
+          for(let i=0;i<40;i++){
+            await page.keyboard.press('PageDown').catch(()=>{});
+            await page.mouse.wheel(0,10000);
+            await page.waitForTimeout(2000);
+            const count=await page.locator('a[href*="/watch?v="]').count();
+            console.log('SCROLL',i,'WATCH LINKS',count);
+            if(count===last && i>8) break;
+            last=count;
+          }
+          await page.screenshot({path:'shot-final.png',fullPage:true});
+          const items=await page.evaluate(()=>{
+            const anchors=[...document.querySelectorAll('a[href*="/watch?v="]')];
+            return anchors.map(a=>({title:(a.getAttribute('title')||a.innerText||a.textContent||'').trim(),href:a.href})).filter(x=>x.title&&x.href.includes('/watch'));
           });
-          const seen = new Set();
-          const uniqueDom = domItems.filter(x => { if (seen.has(x.href)) return false; seen.add(x.href); return true; });
-          const apiItems = [];
-          const walk = (x) => {
-            if (!x || typeof x !== 'object') return;
-            if (Array.isArray(x)) { x.forEach(walk); return; }
-            if (x.lockupViewModel) {
-              const l = x.lockupViewModel;
-              const title = l.metadata?.lockupMetadataViewModel?.title?.content;
-              const id = l.contentId || l.videoId;
-              if (title && id) apiItems.push({ title, id, href: 'https://www.youtube.com/watch?v=' + id });
-            }
-            if (x.playlistVideoRenderer) {
-              const p = x.playlistVideoRenderer;
-              const title = p.title?.runs?.[0]?.text || p.title?.simpleText;
-              if (title && p.videoId) apiItems.push({ title, id: p.videoId, href: 'https://www.youtube.com/watch?v=' + p.videoId });
-            }
-            Object.values(x).forEach(walk);
-          };
-          browseResponses.forEach(walk);
-          const allSeen = new Set();
-          const all = [...apiItems, ...uniqueDom].filter(x => { const key=x.id||x.href; if (allSeen.has(key)) return false; allSeen.add(key); return true; });
-          console.log('BROWSE RESPONSES', browseResponses.length);
-          console.log('API ITEMS', apiItems.length);
-          console.log('DOM ITEMS', uniqueDom.length);
-          console.log('ALL ITEMS', JSON.stringify(all, null, 2));
+          const seen=new Set(); const unique=items.filter(x=>{if(seen.has(x.href))return false;seen.add(x.href);return true;});
+          console.log('ITEMS',JSON.stringify(unique,null,2));
           await browser.close();
           EOF
           node scrape.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: |
+            shot-initial.png
+            shot-final.png
