@@ -5,70 +5,70 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch continuation with cookies
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright
         run: |
-          cat > cookies.py <<'PY'
-          import json,re,urllib.request,urllib.error,urllib.parse,http.cookiejar
-          playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7'
-          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          cj=http.cookiejar.CookieJar()
-          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-          opener.addheaders=[('User-Agent',UA),('Accept-Language','en-GB,en;q=0.9')]
-          def get(url):
-            with opener.open(url,timeout=30) as r: return r.read().decode('utf-8','replace')
-          def post(url,body,referer,client_id,version):
-            headers={'Content-Type':'application/json','User-Agent':UA,'Accept-Language':'en-GB,en;q=0.9','Origin':url.split('/youtubei')[0],'Referer':referer,'X-YouTube-Client-Name':str(client_id),'X-YouTube-Client-Version':version}
-            req=urllib.request.Request(url,data=json.dumps(body).encode(),headers=headers)
-            try:
-              with opener.open(req,timeout=30) as r: return r.status,r.read().decode()
-            except urllib.error.HTTPError as e: return e.code,e.read().decode()
-          def collect(x,out,kind):
-            if isinstance(x,dict):
-              if kind=='web' and 'lockupViewModel' in x:
-                l=x['lockupViewModel']; md=l.get('metadata',{}).get('lockupMetadataViewModel',{})
-                out.append({'kind':'lockup','title':md.get('title',{}).get('content'),'id':l.get('contentId') or l.get('videoId')})
-              if kind=='music' and 'musicResponsiveListItemRenderer' in x:
-                p=x['musicResponsiveListItemRenderer']; title=None
-                for col in p.get('flexColumns',[]):
-                  runs=col.get('musicResponsiveListItemFlexColumnRenderer',{}).get('text',{}).get('runs',[])
-                  if runs: title=runs[0].get('text'); break
-                out.append({'kind':'music','title':title,'id':p.get('playlistItemData',{}).get('videoId')})
-              for v in x.values(): collect(v,out,kind)
-            elif isinstance(x,list):
-              for v in x: collect(v,out,kind)
-          for kind,base,key_re,client_id,client in [
-            ('web','https://www.youtube.com',r'"INNERTUBE_API_KEY":"([^"]+)"',1,'WEB'),
-            ('music','https://music.youtube.com',r'"INNERTUBE_API_KEY":"([^"]+)"',67,'WEB_REMIX'),
-          ]:
-            print('\n########',kind,'########')
-            url=base+'/playlist?list='+playlist
-            html=get(url)
-            norm=html.replace('\\x22','"').replace('\\x7b','{').replace('\\x7d','}').replace('\\x5b','[').replace('\\x5d',']')
-            if kind=='web':
-              tm=re.search(r'continuationCommand":\{"token":"([^"]+)"',norm)
-            else:
-              tm=re.search(r'"nextContinuationData":\{"continuation":"([^"]+)"',norm)
-            if not tm:
-              print('NO TOKEN'); continue
-            token=tm.group(1)
-            key=re.search(key_re,norm).group(1)
-            ver=re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"',norm).group(1)
-            vm=re.search(r'"visitorData":"([^"]+)"',norm)
-            visitor=vm.group(1) if vm else None
-            print('TOKEN',token,'KEY',key,'VER',ver,'VISITOR',visitor,'COOKIES',[(c.name,c.value[:20]) for c in cj])
-            for token_label,ttoken in [('raw',token),('decoded',urllib.parse.unquote(token))]:
-              for body_label,extra in [('cont',{}),('browse',{'browseId':'VL'+playlist})]:
-                print('\n===',kind,token_label,body_label,'===')
-                cobj={'hl':'en-GB','gl':'SG','clientName':client,'clientVersion':ver,'userAgent':UA}
-                if visitor: cobj['visitorData']=visitor
-                body={'context':{'client':cobj}}; body.update(extra); body['continuation']=ttoken
-                status,raw=post(base+'/youtubei/v1/browse?key='+key,body,url,client_id,ver)
-                print('STATUS',status,'LEN',len(raw),'RAW',raw[:800])
-                try: data=json.loads(raw)
-                except Exception: continue
-                out=[]; collect(data,out,kind)
-                print('ITEMS',json.dumps(out,ensure_ascii=False,indent=2))
-                print('KEYS',list(data.keys()))
-                if out: open(kind+'-continuation.json','w').write(json.dumps(out,ensure_ascii=False,indent=2))
-          PY
-          python3 cookies.py
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+      - name: Load playlist in headless Chrome
+        run: |
+          cat > scrape.mjs <<'EOF'
+          import { chromium } from 'playwright';
+          const playlist = 'PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7';
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' });
+          const browseResponses = [];
+          page.on('response', async (response) => {
+            const url = response.url();
+            if (url.includes('/youtubei/v1/browse')) {
+              try { browseResponses.push(await response.json()); } catch {}
+            }
+          });
+          await page.goto('https://www.youtube.com/playlist?list=' + playlist + '&hl=en&gl=US', { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.waitForTimeout(5000);
+          let lastCount = 0;
+          for (let i = 0; i < 30; i++) {
+            await page.mouse.wheel(0, 8000);
+            await page.waitForTimeout(2000);
+            const count = await page.locator('ytd-playlist-video-renderer, ytd-playlist-video-list-renderer, #video-title, a#video-title').count();
+            console.log('scroll', i, 'elements', count);
+            if (count === lastCount && i > 5) break;
+            lastCount = count;
+          }
+          const domItems = await page.evaluate(() => {
+            const anchors = [...document.querySelectorAll('a#video-title, ytd-playlist-video-renderer a[href*="watch"], ytd-playlist-video-list-renderer a[href*="watch"]')];
+            return anchors.map(a => ({ title: (a.getAttribute('title') || a.innerText || a.textContent || '').trim(), href: a.href })).filter(x => x.title && x.href.includes('/watch'));
+          });
+          const seen = new Set();
+          const uniqueDom = domItems.filter(x => { if (seen.has(x.href)) return false; seen.add(x.href); return true; });
+          const apiItems = [];
+          const walk = (x) => {
+            if (!x || typeof x !== 'object') return;
+            if (Array.isArray(x)) { x.forEach(walk); return; }
+            if (x.lockupViewModel) {
+              const l = x.lockupViewModel;
+              const title = l.metadata?.lockupMetadataViewModel?.title?.content;
+              const id = l.contentId || l.videoId;
+              if (title && id) apiItems.push({ title, id, href: 'https://www.youtube.com/watch?v=' + id });
+            }
+            if (x.playlistVideoRenderer) {
+              const p = x.playlistVideoRenderer;
+              const title = p.title?.runs?.[0]?.text || p.title?.simpleText;
+              if (title && p.videoId) apiItems.push({ title, id: p.videoId, href: 'https://www.youtube.com/watch?v=' + p.videoId });
+            }
+            Object.values(x).forEach(walk);
+          };
+          browseResponses.forEach(walk);
+          const allSeen = new Set();
+          const all = [...apiItems, ...uniqueDom].filter(x => { const key=x.id||x.href; if (allSeen.has(key)) return false; allSeen.add(key); return true; });
+          console.log('BROWSE RESPONSES', browseResponses.length);
+          console.log('API ITEMS', apiItems.length);
+          console.log('DOM ITEMS', uniqueDom.length);
+          console.log('ALL ITEMS', JSON.stringify(all, null, 2));
+          await browser.close();
+          EOF
+          node scrape.mjs
