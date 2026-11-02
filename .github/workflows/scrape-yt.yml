@@ -5,9 +5,9 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch next music continuation
+      - name: Fetch next music continuation without click tracking
         run: |
-          cat > next.py <<'PY'
+          cat > next2.py <<'PY'
           import json,re,urllib.request,urllib.error,urllib.parse
           playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7'
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -16,43 +16,40 @@ jobs:
             with urllib.request.urlopen(req,timeout=30) as r: return r.read().decode('utf-8','replace')
           html=get('https://music.youtube.com/playlist?list='+playlist)
           norm=html.replace('\\x22','"').replace('\\x7b','{').replace('\\x7d','}').replace('\\x5b','[').replace('\\x5d',']')
-          m=re.search(r'"nextContinuationData":\{"continuation":"([^"]+)","clickTrackingParams":"([^"]+)"',norm)
-          print('MATCH',m.group(0)[:500] if m else None)
-          token=m.group(1); click=m.group(2)
+          m=re.search(r'"nextContinuationData":\{"continuation":"([^"]+)"',norm)
+          token=m.group(1)
           key=re.search(r'"INNERTUBE_API_KEY":"([^"]+)"',norm).group(1)
           ver=re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"',norm).group(1)
           visitor=re.search(r'"visitorData":"([^"]+)"',norm).group(1)
-          print('KEY VER',key,ver,'VISITOR',visitor)
+          print('TOKEN',token,'KEY',key,'VER',ver,'VISITOR',visitor)
           def post(body):
             headers={'Content-Type':'application/json','User-Agent':UA,'Accept-Language':'en-GB,en;q=0.9','Origin':'https://music.youtube.com','Referer':'https://music.youtube.com/playlist?list='+playlist,'X-YouTube-Client-Name':'67','X-YouTube-Client-Version':ver}
             req=urllib.request.Request('https://music.youtube.com/youtubei/v1/browse?key='+key,data=json.dumps(body).encode(),headers=headers)
             try:
               with urllib.request.urlopen(req,timeout=30) as r: return r.status,r.read().decode()
             except urllib.error.HTTPError as e: return e.code,e.read().decode()
-          variants=[
-            ('cont raw', {'continuation':token}),
-            ('cont decoded', {'continuation':urllib.parse.unquote(token)}),
-            ('browse raw', {'browseId':'VL'+playlist,'continuation':token}),
-            ('browse decoded', {'browseId':'VL'+playlist,'continuation':urllib.parse.unquote(token)}),
-          ]
-          base_context={'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor},'clickTracking':{'clickTrackingParams':click}}
           def collect(x,out):
             if isinstance(x,dict):
               if 'musicResponsiveListItemRenderer' in x:
-                p=x['musicResponsiveListItemRenderer']; title=None; runs=[]
+                p=x['musicResponsiveListItemRenderer']; title=None
                 for col in p.get('flexColumns',[]):
-                  r=col.get('musicResponsiveListItemFlexColumnRenderer',{}).get('text',{}).get('runs',[])
-                  if r:
-                    title=r[0].get('text'); break
+                  runs=col.get('musicResponsiveListItemFlexColumnRenderer',{}).get('text',{}).get('runs',[])
+                  if runs: title=runs[0].get('text'); break
                 out.append({'title':title,'id':p.get('playlistItemData',{}).get('videoId')})
               for v in x.values(): collect(v,out)
             elif isinstance(x,list):
               for v in x: collect(v,out)
-          for name,extra in variants:
+          variants=[
+            ('no visitor cont raw', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA}}, {'continuation':token}),
+            ('visitor cont raw', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor}}, {'continuation':token}),
+            ('visitor browse raw', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor}}, {'browseId':'VL'+playlist,'continuation':token}),
+            ('visitor cont decoded', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor}}, {'continuation':urllib.parse.unquote(token)}),
+          ]
+          for name,client,extra in variants:
             print('\n===',name,'===')
-            body={'context':base_context}; body.update(extra)
+            body={'context':{'client':client}}; body.update(extra)
             status,raw=post(body)
-            print('STATUS',status,'LEN',len(raw),'RAW',raw[:1000])
+            print('STATUS',status,'LEN',len(raw),'RAW',raw[:500])
             try: data=json.loads(raw)
             except Exception: continue
             out=[]; collect(data,out)
@@ -60,4 +57,4 @@ jobs:
             print('KEYS',list(data.keys()))
             if out: open('next-items.json','w').write(json.dumps(out,ensure_ascii=False,indent=2))
           PY
-          python3 next.py
+          python3 next2.py
