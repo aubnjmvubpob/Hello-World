@@ -5,80 +5,36 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install Playwright
+      - name: Try InnerTube clients
         run: |
-          npm init -y
-          npm install playwright
-          npx playwright install chromium --with-deps
-      - name: Load all playlist videos
-        run: |
-          cat > scrape.mjs <<'EOF'
-          import { chromium } from 'playwright';
-          const playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7';
-          const browser=await chromium.launch({headless:true});
-          const page=await browser.newPage({viewport:{width:1400,height:1200},userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'});
-          await page.goto('https://www.youtube.com/playlist?list='+playlist+'&hl=en&gl=US&bpctr=9999999999&has_verified=1',{waitUntil:'load',timeout:90000});
-          await page.waitForTimeout(10000);
-          console.log('URL',page.url(),'TITLE',await page.title());
-          console.log('BODY_START', (await page.locator('body').innerText().catch(e=>String(e))).slice(0,5000));
-          const clickShowMore = async () => {
-            const count=await page.evaluate(()=>{
-              const nodes=[...document.querySelectorAll('button, ytd-button-renderer, yt-button-shape, tp-yt-paper-button')];
-              let n=0;
-              nodes.forEach(e=>{
-                const text=(e.innerText||e.textContent||'').trim();
-                if(text==='Show more' || e.id==='more'){
-                  const r=e.getBoundingClientRect();
-                  if(r.width&&r.height){ e.click(); n++; }
-                }
-              });
-              return n;
-            });
-            if(count) console.log('CLICKED_SHOW_MORE',count);
-          };
-          await clickShowMore();
-          for(let i=0;i<20;i++){
-            await page.evaluate(()=>{
-              window.scrollTo(0,document.documentElement.scrollHeight);
-              document.querySelectorAll('*').forEach(e=>{
-                if(e.scrollHeight > e.clientHeight + 100) e.scrollTop = e.scrollHeight;
-              });
-            });
-            await page.waitForTimeout(1500);
-            await clickShowMore();
-            await page.waitForTimeout(2500);
-            const info=await page.evaluate(()=>({
-              rows:document.querySelectorAll('ytd-playlist-video-renderer').length,
-              links:document.querySelectorAll('a[href*="/watch?v="]').length,
-              continuation:document.querySelectorAll('ytd-continuation-item-renderer').length,
-              showMore:[...document.querySelectorAll('button, ytd-button-renderer, yt-button-shape, tp-yt-paper-button')].filter(e=>(e.innerText||e.textContent||'').trim()==='Show more').length
-            }));
-            console.log('LOOP',i,JSON.stringify(info));
-            if(info.rows>=52) break;
-          }
-          const items=await page.evaluate(()=>{
-            const map=new Map();
-            const anchors=[...document.querySelectorAll('a[href*="/watch?v="]')];
-            anchors.forEach(a=>{
-              let url;
-              try { url=new URL(a.href,location.href); } catch { return; }
-              const v=url.searchParams.get('v');
-              if(!v) return;
-              const index=url.searchParams.get('index')||'';
-              const raw=(a.getAttribute('title')||a.innerText||a.textContent||'').trim();
-              if(!raw) return;
-              if(!map.has(v) || (raw.length>map.get(v).title.length && !/^\d{1,2}:\d{2}(:\d{2})?$/.test(raw))) {
-                map.set(v,{title:raw,id:v,index,href:a.href});
-              }
-            });
-            return [...map.values()].sort((a,b)=>Number(a.index||999)-Number(b.index||999));
-          });
-          console.log('ITEMS',JSON.stringify(items,null,2));
-          console.log('BODY_END', (await page.locator('body').innerText().catch(e=>String(e))).slice(-8000));
-          await browser.close();
-          EOF
-          node scrape.mjs
+          cat > clients.py <<'PY'
+          import json, urllib.request, urllib.error
+          playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7'
+          tokens=[
+          '4qmFsgJbEiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTGNMNEFzQpoCJFZMUEx5elRBOGNldFBkSHRsR3cxWDhLdDdFYTRiZDI3QXBSNw%3D%3D',
+          '4qmFsgI0EiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTTBHOEFFQQ%3D%3D']
+          keys={
+          'WEB':'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
+          'WEB_REMIX':'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30',
+          'ANDROID':'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
+          'IOS':'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAcA',
+          'TVHTML5':'AIzaSyDCU8zKfQf1qU9R8aSgKmT4OEc'}
+          versions={'WEB':'2.20261030.02.00','WEB_REMIX':'1.20261031.09.00','ANDROID':'20.10.38','IOS':'20.10.4','TVHTML5':'7.20261028.10'}
+          client_ids={'WEB':'1','WEB_REMIX':'67','ANDROID':'3','IOS':'5','TVHTML5':'7'}
+          def post(client,key,version,token,browse=False):
+            body={'context':{'client':{'hl':'en-GB','gl':'SG','clientName':client,'clientVersion':version}}, 'continuation':token}
+            if browse: body['browseId']='VL'+playlist
+            req=urllib.request.Request('https://www.youtube.com/youtubei/v1/browse?key='+key,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','User-Agent':'Mozilla/5.0','X-YouTube-Client-Name':client_ids[client],'X-YouTube-Client-Version':version})
+            try:
+              with urllib.request.urlopen(req,timeout=20) as r: return r.status,r.read().decode()
+            except urllib.error.HTTPError as e: return e.code,e.read().decode()
+          for ci,token in enumerate(tokens):
+            for client,key in keys.items():
+              for browse in [False,True]:
+                status,raw=post(client,key,versions[client],token,browse)
+                print('\n===',ci,client,'browse' if browse else 'cont',status,'len',len(raw),'===')
+                print(raw[:1000])
+                if status==200 and len(raw)>10000:
+                  open(f'success-{ci}-{client}-{browse}.json','w').write(raw)
+          PY
+          python3 clients.py
