@@ -5,36 +5,22 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Try InnerTube clients
+      - name: Query Invidious instances
         run: |
-          cat > clients.py <<'PY'
+          cat > invidious.py <<'PY'
           import json, urllib.request, urllib.error
-          playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7'
-          tokens=[
-          '4qmFsgJbEiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTGNMNEFzQpoCJFZMUEx5elRBOGNldFBkSHRsR3cxWDhLdDdFYTRiZDI3QXBSNw%3D%3D',
-          '4qmFsgI0EiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTTBHOEFFQQ%3D%3D']
-          keys={
-          'WEB':'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
-          'WEB_REMIX':'AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30',
-          'ANDROID':'AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w',
-          'IOS':'AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAcA',
-          'TVHTML5':'AIzaSyDCU8zKfQf1qU9R8aSgKmT4OEc'}
-          versions={'WEB':'2.20261030.02.00','WEB_REMIX':'1.20261031.09.00','ANDROID':'20.10.38','IOS':'20.10.4','TVHTML5':'7.20261028.10'}
-          client_ids={'WEB':'1','WEB_REMIX':'67','ANDROID':'3','IOS':'5','TVHTML5':'7'}
-          def post(client,key,version,token,browse=False):
-            body={'context':{'client':{'hl':'en-GB','gl':'SG','clientName':client,'clientVersion':version}}, 'continuation':token}
-            if browse: body['browseId']='VL'+playlist
-            req=urllib.request.Request('https://www.youtube.com/youtubei/v1/browse?key='+key,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','User-Agent':'Mozilla/5.0','X-YouTube-Client-Name':client_ids[client],'X-YouTube-Client-Version':version})
+          pid='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7'
+          hosts=['inv.nadeko.net','invidious.nerdvpn.de','yewtu.be','invidious.jing.rocks','invidious.f5.si','invidious.privacyredirect.com','yt.artemislena.eu','invidious.reallyaweso.me','iv.ggtyler.dev','invidious.lunar.icu','invidious.protokolla.fi','invidious.private.coffee','invidious.darkness.services']
+          for h in hosts:
+            url=f'https://{h}/api/v1/playlists/{pid}?fields=title,videoId,author,index,playlistThumbnail'
+            print('\n===',h,'===')
             try:
-              with urllib.request.urlopen(req,timeout=20) as r: return r.status,r.read().decode()
-            except urllib.error.HTTPError as e: return e.code,e.read().decode()
-          for ci,token in enumerate(tokens):
-            for client,key in keys.items():
-              for browse in [False,True]:
-                status,raw=post(client,key,versions[client],token,browse)
-                print('\n===',ci,client,'browse' if browse else 'cont',status,'len',len(raw),'===')
-                print(raw[:1000])
-                if status==200 and len(raw)>10000:
-                  open(f'success-{ci}-{client}-{browse}.json','w').write(raw)
+              req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0','Accept':'application/json'})
+              with urllib.request.urlopen(req,timeout=15) as r:
+                raw=r.read().decode(); print('STATUS',r.status,'LEN',len(raw)); print(raw[:5000])
+                if len(raw)>1000:
+                  open(h.replace('.','_')+'.json','w').write(raw)
+            except Exception as e:
+              print('ERR',repr(e))
           PY
-          python3 clients.py
+          python3 invidious.py
