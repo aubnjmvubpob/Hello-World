@@ -5,56 +5,70 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch next music continuation without click tracking
+      - name: Fetch continuation with cookies
         run: |
-          cat > next2.py <<'PY'
-          import json,re,urllib.request,urllib.error,urllib.parse
+          cat > cookies.py <<'PY'
+          import json,re,urllib.request,urllib.error,urllib.parse,http.cookiejar
           playlist='PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7'
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          cj=http.cookiejar.CookieJar()
+          opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+          opener.addheaders=[('User-Agent',UA),('Accept-Language','en-GB,en;q=0.9')]
           def get(url):
-            req=urllib.request.Request(url,headers={'User-Agent':UA,'Accept-Language':'en-GB,en;q=0.9'})
-            with urllib.request.urlopen(req,timeout=30) as r: return r.read().decode('utf-8','replace')
-          html=get('https://music.youtube.com/playlist?list='+playlist)
-          norm=html.replace('\\x22','"').replace('\\x7b','{').replace('\\x7d','}').replace('\\x5b','[').replace('\\x5d',']')
-          m=re.search(r'"nextContinuationData":\{"continuation":"([^"]+)"',norm)
-          token=m.group(1)
-          key=re.search(r'"INNERTUBE_API_KEY":"([^"]+)"',norm).group(1)
-          ver=re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"',norm).group(1)
-          visitor=re.search(r'"visitorData":"([^"]+)"',norm).group(1)
-          print('TOKEN',token,'KEY',key,'VER',ver,'VISITOR',visitor)
-          def post(body):
-            headers={'Content-Type':'application/json','User-Agent':UA,'Accept-Language':'en-GB,en;q=0.9','Origin':'https://music.youtube.com','Referer':'https://music.youtube.com/playlist?list='+playlist,'X-YouTube-Client-Name':'67','X-YouTube-Client-Version':ver}
-            req=urllib.request.Request('https://music.youtube.com/youtubei/v1/browse?key='+key,data=json.dumps(body).encode(),headers=headers)
+            with opener.open(url,timeout=30) as r: return r.read().decode('utf-8','replace')
+          def post(url,body,referer,client_id,version):
+            headers={'Content-Type':'application/json','User-Agent':UA,'Accept-Language':'en-GB,en;q=0.9','Origin':url.split('/youtubei')[0],'Referer':referer,'X-YouTube-Client-Name':str(client_id),'X-YouTube-Client-Version':version}
+            req=urllib.request.Request(url,data=json.dumps(body).encode(),headers=headers)
             try:
-              with urllib.request.urlopen(req,timeout=30) as r: return r.status,r.read().decode()
+              with opener.open(req,timeout=30) as r: return r.status,r.read().decode()
             except urllib.error.HTTPError as e: return e.code,e.read().decode()
-          def collect(x,out):
+          def collect(x,out,kind):
             if isinstance(x,dict):
-              if 'musicResponsiveListItemRenderer' in x:
+              if kind=='web' and 'lockupViewModel' in x:
+                l=x['lockupViewModel']; md=l.get('metadata',{}).get('lockupMetadataViewModel',{})
+                out.append({'kind':'lockup','title':md.get('title',{}).get('content'),'id':l.get('contentId') or l.get('videoId')})
+              if kind=='music' and 'musicResponsiveListItemRenderer' in x:
                 p=x['musicResponsiveListItemRenderer']; title=None
                 for col in p.get('flexColumns',[]):
                   runs=col.get('musicResponsiveListItemFlexColumnRenderer',{}).get('text',{}).get('runs',[])
                   if runs: title=runs[0].get('text'); break
-                out.append({'title':title,'id':p.get('playlistItemData',{}).get('videoId')})
-              for v in x.values(): collect(v,out)
+                out.append({'kind':'music','title':title,'id':p.get('playlistItemData',{}).get('videoId')})
+              for v in x.values(): collect(v,out,kind)
             elif isinstance(x,list):
-              for v in x: collect(v,out)
-          variants=[
-            ('no visitor cont raw', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA}}, {'continuation':token}),
-            ('visitor cont raw', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor}}, {'continuation':token}),
-            ('visitor browse raw', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor}}, {'browseId':'VL'+playlist,'continuation':token}),
-            ('visitor cont decoded', {'client':{'hl':'en-GB','gl':'SG','clientName':'WEB_REMIX','clientVersion':ver,'userAgent':UA,'visitorData':visitor}}, {'continuation':urllib.parse.unquote(token)}),
-          ]
-          for name,client,extra in variants:
-            print('\n===',name,'===')
-            body={'context':{'client':client}}; body.update(extra)
-            status,raw=post(body)
-            print('STATUS',status,'LEN',len(raw),'RAW',raw[:500])
-            try: data=json.loads(raw)
-            except Exception: continue
-            out=[]; collect(data,out)
-            print('ITEMS',json.dumps(out,ensure_ascii=False,indent=2))
-            print('KEYS',list(data.keys()))
-            if out: open('next-items.json','w').write(json.dumps(out,ensure_ascii=False,indent=2))
+              for v in x: collect(v,out,kind)
+          for kind,base,key_re,client_id,client in [
+            ('web','https://www.youtube.com',r'"INNERTUBE_API_KEY":"([^"]+)"',1,'WEB'),
+            ('music','https://music.youtube.com',r'"INNERTUBE_API_KEY":"([^"]+)"',67,'WEB_REMIX'),
+          ]:
+            print('\n########',kind,'########')
+            url=base+'/playlist?list='+playlist
+            html=get(url)
+            norm=html.replace('\\x22','"').replace('\\x7b','{').replace('\\x7d','}').replace('\\x5b','[').replace('\\x5d',']')
+            if kind=='web':
+              tm=re.search(r'continuationCommand":\{"token":"([^"]+)"',norm)
+            else:
+              tm=re.search(r'"nextContinuationData":\{"continuation":"([^"]+)"',norm)
+            if not tm:
+              print('NO TOKEN'); continue
+            token=tm.group(1)
+            key=re.search(key_re,norm).group(1)
+            ver=re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"',norm).group(1)
+            vm=re.search(r'"visitorData":"([^"]+)"',norm)
+            visitor=vm.group(1) if vm else None
+            print('TOKEN',token,'KEY',key,'VER',ver,'VISITOR',visitor,'COOKIES',[(c.name,c.value[:20]) for c in cj])
+            for token_label,ttoken in [('raw',token),('decoded',urllib.parse.unquote(token))]:
+              for body_label,extra in [('cont',{}),('browse',{'browseId':'VL'+playlist})]:
+                print('\n===',kind,token_label,body_label,'===')
+                cobj={'hl':'en-GB','gl':'SG','clientName':client,'clientVersion':ver,'userAgent':UA}
+                if visitor: cobj['visitorData']=visitor
+                body={'context':{'client':cobj}}; body.update(extra); body['continuation']=ttoken
+                status,raw=post(base+'/youtubei/v1/browse?key='+key,body,url,client_id,ver)
+                print('STATUS',status,'LEN',len(raw),'RAW',raw[:800])
+                try: data=json.loads(raw)
+                except Exception: continue
+                out=[]; collect(data,out,kind)
+                print('ITEMS',json.dumps(out,ensure_ascii=False,indent=2))
+                print('KEYS',list(data.keys()))
+                if out: open(kind+'-continuation.json','w').write(json.dumps(out,ensure_ascii=False,indent=2))
           PY
-          python3 next2.py
+          python3 cookies.py
