@@ -1,0 +1,63 @@
+name: scrape-yt
+on:
+  workflow_dispatch:
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch YouTube continuation
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, sys
+          key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+          continuation = "4qmFsgJbEiRWTFBMeXpUQThjZXRQZEh0bEd3MVg4S3Q3RWE0YmQyN0FwUjcaDGtnRURDTGNMNEFzQpoCJFZMUEx5elRBOGNldFBkSHRsR3cxWDhLdDdFYTRiZDI3QXBSNw=="
+          body = {
+            "context": {"client": {"hl": "en-GB", "gl": "SG", "clientName": "WEB", "clientVersion": "2.20261030.02.00"}},
+            "continuation": continuation
+          }
+          req = urllib.request.Request(
+              "https://www.youtube.com/youtubei/v1/browse?key=" + key,
+              data=json.dumps(body).encode(),
+              headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  data = json.load(r)
+          except Exception as e:
+              print("ERROR", repr(e))
+              if hasattr(e, "read"):
+                  print(e.read().decode()[:2000])
+              sys.exit(1)
+          open("yt-response.json", "w").write(json.dumps(data, ensure_ascii=False))
+          out=[]
+          def walk(x):
+              if isinstance(x, dict):
+                  if "lockupViewModel" in x:
+                      l = x["lockupViewModel"]
+                      md = l.get("metadata", {}).get("lockupMetadataViewModel", {})
+                      title = md.get("title", {}).get("content")
+                      content_id = l.get("contentId") or l.get("id") or l.get("videoId")
+                      out.append({"kind":"lockup", "title": title, "id": content_id, "keys": list(l.keys())})
+                  if "playlistVideoRenderer" in x:
+                      p = x["playlistVideoRenderer"]
+                      title = p.get("title", {}).get("runs", [{}])[0].get("text")
+                      out.append({"kind":"playlistVideo", "title": title, "id": p.get("videoId"), "keys": list(p.keys())})
+                  if "musicResponsiveListItemRenderer" in x:
+                      p=x["musicResponsiveListItemRenderer"]
+                      title=None
+                      for col in p.get("flexColumns",[]):
+                          runs=col.get("musicResponsiveListItemFlexColumnRenderer",{}).get("text",{}).get("runs",[])
+                          if runs:
+                              title=runs[0].get("text"); break
+                      out.append({"kind":"music", "title": title, "id": p.get("playlistItemData",{}).get("videoId")})
+                  for v in x.values(): walk(v)
+              elif isinstance(x, list):
+                  for v in x: walk(v)
+          walk(data)
+          print("ITEMS", json.dumps(out, ensure_ascii=False, indent=2))
+          print("TOP KEYS", list(data.keys()))
+      - name: Upload response
+        uses: actions/upload-artifact@v4
+        with:
+          name: yt-response
+          path: yt-response.json
