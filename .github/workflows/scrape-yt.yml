@@ -5,80 +5,83 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch and call fresh YouTube continuation
+      - name: Fetch and call YouTube continuation with headers
         run: |
-          cat > scrape_fresh.py <<'PY'
-          import json, re, urllib.request, urllib.error, sys
+          cat > scrape_headers.py <<'PY'
+          import json, re, urllib.request, urllib.error
           playlist = "PLyzTA8cetPdHtlGw1X8Kt7Ea4bd27ApR7"
-          web_key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
-          music_key = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
           UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
           def get(url):
-              req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-GB,en;q=0.9"})
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  return r.read().decode("utf-8", "replace")
+              req=urllib.request.Request(url, headers={"User-Agent":UA,"Accept-Language":"en-GB,en;q=0.9"})
+              with urllib.request.urlopen(req, timeout=30) as r: return r.read().decode("utf-8","replace")
 
-          def post(base, key, client, version, token, visitor=None):
-              client_obj = {"hl":"en-GB","gl":"SG","clientName":client,"clientVersion":version,"userAgent":UA}
-              if visitor: client_obj["visitorData"] = visitor
-              body={"context":{"client":client_obj},"continuation":token}
-              req=urllib.request.Request(base+"/youtubei/v1/browse?key="+key,data=json.dumps(body).encode(),headers={"Content-Type":"application/json","User-Agent":UA,"Accept-Language":"en-GB,en;q=0.9"})
+          def find(pattern, html, default=None):
+              m=re.search(pattern, html); return m.group(1) if m else default
+
+          def post(base, key, client_id, client, version, token, browse_id=None, visitor=None):
+              client_obj={"hl":"en-GB","gl":"SG","clientName":client,"clientVersion":version,"userAgent":UA}
+              if visitor: client_obj["visitorData"]=visitor
+              body={"context":{"client":client_obj}}
+              if browse_id: body["browseId"]=browse_id
+              body["continuation"]=token
+              headers={"Content-Type":"application/json","User-Agent":UA,"Accept-Language":"en-GB,en;q=0.9","Origin":base,"Referer":base+"/playlist?list="+playlist,"X-YouTube-Client-Name":str(client_id),"X-YouTube-Client-Version":version}
+              req=urllib.request.Request(base+"/youtubei/v1/browse?key="+key,data=json.dumps(body).encode(),headers=headers)
               try:
-                  with urllib.request.urlopen(req, timeout=30) as r: return r.status, r.read().decode()
-              except urllib.error.HTTPError as e: return e.code, e.read().decode()
+                  with urllib.request.urlopen(req, timeout=30) as r: return r.status,r.read().decode()
+              except urllib.error.HTTPError as e: return e.code,e.read().decode()
 
-          def collect(x, out):
-              if isinstance(x, dict):
+          def collect(x,out):
+              if isinstance(x,dict):
                   if "lockupViewModel" in x:
                       l=x["lockupViewModel"]; md=l.get("metadata",{}).get("lockupMetadataViewModel",{})
-                      out.append(("lockup", md.get("title",{}).get("content"), l.get("contentId") or l.get("videoId")))
+                      out.append(("lockup",md.get("title",{}).get("content"),l.get("contentId") or l.get("videoId")))
                   if "playlistVideoRenderer" in x:
-                      p=x["playlistVideoRenderer"]; out.append(("playlistVideo", p.get("title",{}).get("runs",[{}])[0].get("text"), p.get("videoId")))
+                      p=x["playlistVideoRenderer"]; out.append(("playlistVideo",p.get("title",{}).get("runs",[{}])[0].get("text"),p.get("videoId")))
                   if "musicResponsiveListItemRenderer" in x:
                       p=x["musicResponsiveListItemRenderer"]; title=None
                       for col in p.get("flexColumns",[]):
                           runs=col.get("musicResponsiveListItemFlexColumnRenderer",{}).get("text",{}).get("runs",[])
                           if runs: title=runs[0].get("text"); break
-                      out.append(("music", title, p.get("playlistItemData",{}).get("videoId")))
+                      out.append(("music",title,p.get("playlistItemData",{}).get("videoId")))
                   for v in x.values(): collect(v,out)
-              elif isinstance(x, list):
+              elif isinstance(x,list):
                   for v in x: collect(v,out)
 
-          print("Fetching web HTML")
-          web_html = get("https://www.youtube.com/playlist?list=" + playlist)
-          web_tokens = re.findall(r'continuationCommand":\{"token":"([^"]+)"', web_html)
-          web_visitors = re.findall(r'"visitorData":"([^"]+)"', web_html)
-          print("web tokens", web_tokens)
-          print("web visitors", web_visitors[:3])
+          web=get("https://www.youtube.com/playlist?list="+playlist)
+          music=get("https://music.youtube.com/playlist?list="+playlist)
+          web_token=find(r'continuationCommand":\{"token":"([^"]+)"', web)
+          music_token=find(r'nextContinuationData(?:\\?"):\{(?:\\?")continuation(?:\\?"):(?:\\?")([^"\\]+)', music)
+          web_key=find(r'"INNERTUBE_API_KEY":"([^"]+)"', web)
+          music_key=find(r'"INNERTUBE_API_KEY":"([^"]+)"', music)
+          web_ver=find(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', web)
+          music_ver=find(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', music)
+          web_visitor=find(r'"visitorData":"([^"]+)"', web)
+          music_visitor=find(r'"visitorData":"([^"]+)"', music)
+          print("WEB",web_key,web_ver,web_token,web_visitor)
+          print("MUSIC",music_key,music_ver,music_token,music_visitor)
 
-          print("Fetching music HTML")
-          music_html = get("https://music.youtube.com/playlist?list=" + playlist)
-          music_tokens = re.findall(r'nextContinuationData":\{"continuation":"([^"]+)"', music_html)
-          music_visitors = re.findall(r'"visitorData":"([^"]+)"', music_html)
-          print("music tokens", music_tokens)
-          print("music visitors", music_visitors[:3])
+          variants=[]
+          for label,base,key,cid,client,ver,token,visitor in [
+              ("web","https://www.youtube.com",web_key,1,"WEB",web_ver,web_token,web_visitor),
+              ("music","https://music.youtube.com",music_key,67,"WEB_REMIX",music_ver,music_token,music_visitor),
+          ]:
+              if not token: continue
+              variants += [
+                  (label+" continuation only",base,key,cid,client,ver,token,None,visitor),
+                  (label+" browseId+continuation",base,key,cid,client,ver,token,"VL"+playlist,visitor),
+              ]
 
-          attempts=[]
-          for t in web_tokens:
-              attempts.append(("web fresh token no visitor", "https://www.youtube.com", web_key, "WEB", "2.20261030.02.00", t, None))
-              attempts.append(("web fresh token with visitor", "https://www.youtube.com", web_key, "WEB", "2.20261030.02.00", t, web_visitors[0] if web_visitors else None))
-          for t in music_tokens:
-              attempts.append(("music fresh token no visitor", "https://music.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", t, None))
-              attempts.append(("music fresh token with visitor", "https://music.youtube.com", music_key, "WEB_REMIX", "1.20261031.09.00", t, music_visitors[0] if music_visitors else None))
-
-          for name,base,key,client,version,token,visitor in attempts:
+          for name,base,key,cid,client,ver,token,browse_id,visitor in variants:
               print("\n====",name,"====")
-              print("token",token,"visitor",visitor)
-              status,raw=post(base,key,client,version,token,visitor)
+              status,raw=post(base,key,cid,client,ver,token,browse_id,visitor)
               print("STATUS",status,"LEN",len(raw))
-              print(raw[:1200])
+              print(raw[:1800])
               try: data=json.loads(raw)
               except Exception: continue
               out=[]; collect(data,out)
               print("ITEMS",json.dumps(out,ensure_ascii=False))
               print("KEYS",list(data.keys()))
-              if out:
-                  open("yt-continuation.json","w").write(json.dumps(data,ensure_ascii=False,indent=2))
+              if out: open("yt-continuation.json","w").write(json.dumps(data,ensure_ascii=False,indent=2))
           PY
-          python3 scrape_fresh.py
+          python3 scrape_headers.py
